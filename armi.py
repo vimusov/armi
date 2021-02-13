@@ -2,32 +2,102 @@
 
 from argparse import ArgumentParser
 from contextlib import closing
+from dataclasses import dataclass
 from hashlib import md5
 from operator import attrgetter
+from os import fdatasync
 from pathlib import Path
 from signal import SIGINT, SIGTERM, signal
-from subprocess import check_call
 from tarfile import TarFile
-from tempfile import NamedTemporaryFile
-from time import ctime
-from typing import Iterator, List, NamedTuple
+from time import ctime, monotonic
+from typing import Iterator, List
 
-Package = NamedTuple('Package', [('path', Path), ('size', int), ('checksum', str)])
+from requests import Session
+
+
+@dataclass(frozen=True)
+class Package:
+    path: Path
+    size: int
+    checksum: str
+
+
 ATTEMPTS = 2
 BUF_SIZE = 4 * 2**20
 BRANCHES = ('core', 'extra', 'community', 'multilib')
-URI_TEMPLATE = '/{branch:s}/os/x86_64/{name:s}'
+
+
+def _download(session: Session, url: str, file_path: Path, idx: int, amount: int):
+    start_size = None
+    start_time = None
+    prev_percent = None
+
+    def get_human_time(eta_time: float) -> str:
+        secs = int(eta_time)
+        mins, secs = divmod(secs, 60)
+        hours, mins = divmod(mins, 60)
+        days, hours = divmod(hours, 24)
+        if days > 0:
+            return f'{days}d{hours:02d}h{mins:02d}:{secs:02d}'
+        return f'{hours:02d}:{mins:02d}:{secs:02d}'
+
+    def show_progress(cur_size: int, total_size: int):
+        nonlocal start_size
+        nonlocal start_time
+        nonlocal prev_percent
+
+        cur_size /= 1024
+        total_size /= 1024
+        cur_time = monotonic()
+        if prev_percent is None and start_size is None and start_time is None:
+            prev_percent = -1
+            start_size = cur_size
+            start_time = cur_time
+        chunk_size = cur_size - start_size
+        time_elapsed = cur_time - start_time
+        speed = chunk_size * 8 / time_elapsed if time_elapsed > 0 else 0
+        if speed >= 1000:
+            speed /= 1000
+            speed_suffix = 'Mbps'
+        else:
+            speed_suffix = 'Kbps'
+        eta_time = (total_size - cur_size) / speed if speed > 0 else 0
+        cur_percent = int(cur_size / total_size * 100) if total_size > 0 else 0
+        if prev_percent == cur_percent:
+            return
+        prev_percent = cur_percent
+        size_delim = 1024 if total_size >= 1024 else 1
+        size_suffix = 'Mb' if total_size >= 1024 else 'Kb'
+        status = \
+            f'\r[{idx}/{amount}] {file_path.name}: ' \
+            f'{cur_size / size_delim:.2f}/{total_size / size_delim:.2f} {size_suffix} ({cur_percent}%) ' \
+            f'@ {speed:.3f} {speed_suffix} ' \
+            f'ETA {get_human_time(eta_time)}'
+        print(status, end='')
+
+    with session.get(url, timeout=120, stream=True) as response:
+        response.raise_for_status()
+        cur_len = 0
+        total_len = int(response.headers['Content-Length'])
+        with file_path.open(mode='wb') as out_file:
+            for chunk in response.iter_content(chunk_size=BUF_SIZE):
+                cur_len += len(chunk)
+                out_file.write(chunk)
+                show_progress(cur_len, total_len)
+            out_file.flush()
+            fdatasync(out_file.fileno())
+
+    print('')
 
 
 def _download_files(work_dir: Path, mirror_url: str, branch: str, names: List[str]):
     for item in work_dir.iterdir():
         if item.name in names:
             item.unlink()
-    with NamedTemporaryFile(mode='wt') as tmp_file:
-        for name in names:
-            tmp_file.write(mirror_url + URI_TEMPLATE.format(branch=branch, name=name) + '\n')
-        tmp_file.flush()
-        check_call(['wget', '-nv', '--show-progress', '-c', '-P', str(work_dir), '-i', tmp_file.name])
+    total = len(names)
+    with Session() as session:
+        for idx, name in enumerate(names, start=1):
+            _download(session, f'{mirror_url}/{branch}/os/x86_64/{name}', work_dir / name, idx, total)
 
 
 def _load_packages(work_dir: Path, branch: str) -> Iterator[Package]:
@@ -128,20 +198,19 @@ def main():
     arg_parser.add_argument('branches', nargs='*', default=BRANCHES, help='Branch(es) to download.')
     args = arg_parser.parse_args()
 
-    # http://mir.archlinux.fr/
     config = Path(args.config)
-    mirror_url = args.mirror_url.rstrip('/') if args.mirror_url else None
+    mirror_url = args.mirror_url or None
     if mirror_url:
         config.parent.mkdir(mode=0o755, exist_ok=True)
         config.write_text(f'{mirror_url}\n')
     if config.is_file():
-        mirror_url = config.read_text().strip()
+        mirror_url = config.read_text().strip().removesuffix('/')
     else:
         print('ERROR: Mirror URL is required for update.')
         exit(1)
 
     for signo in (SIGINT, SIGTERM):
-        signal(signo, lambda *unused: exit(1))
+        signal(signo, lambda *unused_args: exit(1))
 
     errors = False
     for branch in args.branches:
