@@ -23,7 +23,8 @@ class Package:
 
 
 ATTEMPTS = 2
-BUF_SIZE = 4 * 2**20
+CHUNK_SIZE = 2**20
+BUF_SIZE = 32 * CHUNK_SIZE
 BRANCHES = ('core', 'extra', 'community', 'multilib')
 
 
@@ -49,13 +50,12 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         cur_size /= 1024
         total_size /= 1024
         cur_time = monotonic()
-        if prev_percent is None and start_size is None and start_time is None:
+        if (prev_percent is None) and (start_size is None) and (start_time is None):
             prev_percent = -1
             start_size = cur_size
             start_time = cur_time
-        chunk_size = cur_size - start_size
         time_elapsed = cur_time - start_time
-        speed = chunk_size * 8 / time_elapsed if time_elapsed > 0 else 0
+        speed = (cur_size - start_size) * 8 / time_elapsed if time_elapsed > 0 else 0
         if speed >= 1000:
             speed /= 1000
             speed_suffix = 'Mbps'
@@ -80,7 +80,7 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         cur_len = 0
         total_len = int(response.headers['Content-Length'])
         with file_path.open(mode='wb') as out_file:
-            for chunk in response.iter_content(chunk_size=BUF_SIZE):
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                 cur_len += len(chunk)
                 out_file.write(chunk)
                 show_progress(cur_len, total_len)
