@@ -7,6 +7,7 @@ from hashlib import md5
 from operator import attrgetter
 from os import fdatasync
 from pathlib import Path
+from shutil import get_terminal_size
 from signal import SIGINT, SIGTERM, signal
 from tarfile import TarFile
 from time import ctime, monotonic
@@ -32,6 +33,7 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
     start_size = None
     start_time = None
     prev_percent = None
+    term_cols, unused_rows = get_terminal_size(fallback=(128, 0))
 
     def get_human_time(eta_time: float) -> str:
         secs = int(eta_time)
@@ -55,13 +57,14 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
             start_size = cur_size
             start_time = cur_time
         time_elapsed = cur_time - start_time
-        speed = (cur_size - start_size) * 8 / time_elapsed if time_elapsed > 0 else 0
+        speed = (cur_size - start_size) / time_elapsed if time_elapsed > 0 else 0
+        eta_time = (total_size - cur_size) / speed if speed > 0 else 0
+        speed *= 8
         if speed >= 1000:
             speed /= 1000
             speed_suffix = 'Mbps'
         else:
             speed_suffix = 'Kbps'
-        eta_time = (total_size - cur_size) / speed if speed > 0 else 0
         cur_percent = int(cur_size / total_size * 100) if total_size > 0 else 0
         if prev_percent == cur_percent:
             return
@@ -71,9 +74,10 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         status = \
             f'\r[{idx}/{amount}] {file_path.name}: ' \
             f'{cur_size / size_delim:.2f}/{total_size / size_delim:.2f} {size_suffix} ({cur_percent}%) ' \
-            f'@ {speed:.3f} {speed_suffix} ' \
+            f'@ {speed:.0f} {speed_suffix} ' \
             f'ETA {get_human_time(eta_time)}'
-        print(status, end='')
+        tail = ' ' * (term_cols - len(status))
+        print(status + tail, end='')
 
     with session.get(url, timeout=120, stream=True) as response:
         response.raise_for_status()
