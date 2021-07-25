@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 from argparse import ArgumentParser
+from configparser import RawConfigParser
 from contextlib import closing
 from dataclasses import dataclass
 from hashlib import md5
@@ -11,7 +12,7 @@ from shutil import get_terminal_size
 from signal import SIGINT, SIGTERM, signal
 from tarfile import TarFile
 from time import ctime, monotonic
-from typing import Iterator, List
+from typing import Iterator, List, Optional
 
 from requests import Session
 
@@ -23,10 +24,36 @@ class Package:
     checksum: str
 
 
+class Mirrors:
+    def __init__(self, path: Path):
+        parser = RawConfigParser()
+        parser.read_string(path.read_text())
+        norm = lambda value: value.strip().lower()
+        self.__default = norm(parser.get('setup', 'default'))
+        self.__mirrors = {norm(country): norm(url) for country, url in parser.items('mirrors')}
+
+    def get(self, country: Optional[str]) -> str:
+        return self.__mirrors[(country or self.__default).strip().lower()]
+
+    def show(self):
+        for country, url in self.__mirrors.items():
+            print(f'{"*" if country == self.__default else " "}{country}: {url}')
+
+
 ATTEMPTS = 2
 CHUNK_SIZE = 2**20
 BUF_SIZE = 32 * CHUNK_SIZE
-BRANCHES = ('core', 'extra', 'community', 'multilib')
+DEF_ARCH = 'x86_64'
+REPOS_CONF = {
+    'aarch64': {
+        'url': '{mirror}/archlinux-arm/{arch}/{branch}/{name}',
+        'branches': ('core', 'extra', 'community', 'alarm'),
+    },
+    DEF_ARCH: {
+        'url': '{mirror}/archlinux/{branch}/os/{arch}/{name}',
+        'branches': ('core', 'extra', 'community', 'multilib'),
+    },
+}
 
 
 def _download(session: Session, url: str, file_path: Path, idx: int, amount: int):
@@ -94,14 +121,14 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
     print('')
 
 
-def _download_files(work_dir: Path, mirror_url: str, branch: str, names: List[str]):
+def _download_files(work_dir: Path, mirror: str, arch: str, branch: str, names: List[str]):
     for item in work_dir.iterdir():
         if item.name in names:
             item.unlink()
     total = len(names)
     with Session() as session:
         for idx, name in enumerate(names, start=1):
-            _download(session, f'{mirror_url}/{branch}/os/x86_64/{name}', work_dir / name, idx, total)
+            _download(session, REPOS_CONF[arch]['url'].format(mirror=mirror, arch=arch, branch=branch, name=name), work_dir / name, idx, total)
 
 
 def _load_packages(work_dir: Path, branch: str) -> Iterator[Package]:
@@ -196,46 +223,46 @@ def _fix_symlinks(work_dir: Path, branch: str):
 
 def main():
     arg_parser = ArgumentParser()
-    arg_parser.add_argument('-c', '--config', default=str(Path().home().joinpath('.config', 'armi.conf')), help='Config file.')
-    arg_parser.add_argument('-d', '--destination-dir', default=str(Path().cwd().resolve()), help='Destination directory.')
-    arg_parser.add_argument('-m', '--mirror-url', default=None, help='Mirror URL to download from.')
-    arg_parser.add_argument('branches', nargs='*', default=BRANCHES, help='Branch(es) to download.')
+    arg_parser.add_argument('-c', '--config', type=Path, default=Path('~/.config/armi.conf'), help='Config file.')
+    arg_parser.add_argument('-d', '--destination-dir', type=Path, default=Path().cwd().resolve(), help='Destination directory.')
+    arg_parser.add_argument('-m', '--mirror', default=None, help='Mirror URL to download from.')
+    arg_parser.add_argument('-s', '--show', action='store_true', help='Show all configured mirrors.')
+    arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF), nargs='+', default=DEF_ARCH, help='Arches to sync.')
     args = arg_parser.parse_args()
 
-    config = Path(args.config)
-    mirror_url = args.mirror_url or None
-    if mirror_url:
-        config.parent.mkdir(mode=0o755, exist_ok=True)
-        config.write_text(f'{mirror_url}\n')
-    if config.is_file():
-        mirror_url = config.read_text().strip().removesuffix('/')
-    else:
-        print('ERROR: Mirror URL is required for update.')
-        exit(1)
+    mirrors = Mirrors(args.config.expanduser())
+    if args.show:
+        mirrors.show()
+        return
 
     for signo in (SIGINT, SIGTERM):
         signal(signo, lambda *unused_args: exit(1))
 
     errors = False
-    for branch in args.branches:
-        work_dir = Path(args.destination_dir, branch)
-        work_dir.mkdir(mode=0o755, exist_ok=True)
-        print(f'>>> Syncing branch {branch!r}.')
-        _download_files(work_dir, mirror_url, branch, [f'{branch}.db.tar.gz', f'{branch}.files.tar.gz'])
-        packages = sorted(_load_packages(work_dir, branch), key=attrgetter('size'), reverse=True)
-        target_packages = []
-        for attempt in range(ATTEMPTS):
-            target_packages = _check_packages(target_packages or packages)
-            if not target_packages:
-                _remove_redundant_files(work_dir, branch, [package.path.name for package in packages])
-                _fix_symlinks(work_dir, branch)
-                print(f'>>> Branch {branch!r} has been synced successfully.')
-                break
-            print(f'>>> Downloading packages...')
-            _download_files(work_dir, mirror_url, branch, [package.path.name for package in target_packages])
-        else:
-            errors = True
-            print('>>> Previous attempt has been failed, trying one more time.')
+    mirror = mirrors.get(args.mirror)
+    print(f'>>> Using mirror {mirror!r}.')
+
+    for arch in args.arches:
+        print(f'>>> Arch: {arch!r}.')
+        for branch in REPOS_CONF[arch]['branches']:
+            work_dir = Path(args.destination_dir, arch, branch)
+            work_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+            print(f'>>> Syncing branch {branch!r}.')
+            _download_files(work_dir, mirror, arch, branch, [f'{branch}.db.tar.gz', f'{branch}.files.tar.gz'])
+            packages = sorted(_load_packages(work_dir, branch), key=attrgetter('size'), reverse=True)
+            target_packages = []
+            for attempt in range(ATTEMPTS):
+                target_packages = _check_packages(target_packages or packages)
+                if not target_packages:
+                    _remove_redundant_files(work_dir, branch, [package.path.name for package in packages])
+                    _fix_symlinks(work_dir, branch)
+                    print(f'>>> Branch {branch!r} has been synced successfully.')
+                    break
+                print(f'>>> Downloading packages...')
+                _download_files(work_dir, mirror, arch, branch, [package.path.name for package in target_packages])
+            else:
+                errors = True
+                print('>>> Previous attempt has been failed, trying one more time.')
 
     if errors:
         print('ERROR: Some branches have been failed to sync.')
