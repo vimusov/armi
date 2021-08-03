@@ -106,17 +106,25 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         tail = ' ' * (term_cols - len(status))
         print(status + tail, end='')
 
-    with session.get(url, timeout=120, stream=True) as response:
-        response.raise_for_status()
-        cur_len = 0
-        total_len = int(response.headers['Content-Length'])
-        with file_path.open(mode='wb') as out_file:
-            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                cur_len += len(chunk)
-                out_file.write(chunk)
-                show_progress(cur_len, total_len)
-            out_file.flush()
-            fdatasync(out_file.fileno())
+    def fetch():
+        with session.get(url, timeout=120, stream=True) as response:
+            response.raise_for_status()
+            cur_len = 0
+            total_len = int(response.headers['Content-Length'])
+            with file_path.open(mode='wb') as out_file:
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    cur_len += len(chunk)
+                    out_file.write(chunk)
+                    show_progress(cur_len, total_len)
+                out_file.flush()
+                fdatasync(out_file.fileno())
+
+    for unused_attempt in range(3):
+        try:
+            fetch()
+            break
+        except Exception as error:
+            print(f"\nOops, error '{error!s}' occurred, will try again.")
 
     print('')
 
@@ -227,7 +235,7 @@ def main():
     arg_parser.add_argument('-d', '--destination-dir', type=Path, default=Path().cwd().resolve(), help='Destination directory.')
     arg_parser.add_argument('-m', '--mirror', default=None, help='Mirror URL to download from.')
     arg_parser.add_argument('-s', '--show', action='store_true', help='Show all configured mirrors.')
-    arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF), nargs='+', default=DEF_ARCH, help='Arches to sync.')
+    arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF) + ['all'], nargs='+', default=[DEF_ARCH], help='Arches to sync.')
     args = arg_parser.parse_args()
 
     mirrors = Mirrors(args.config.expanduser())
@@ -242,7 +250,8 @@ def main():
     mirror = mirrors.get(args.mirror)
     print(f'>>> Using mirror {mirror!r}.')
 
-    for arch in args.arches:
+    arches = list(REPOS_CONF) if 'all' in args.arches else args.arches
+    for arch in arches:
         print(f'>>> Arch: {arch!r}.')
         for branch in REPOS_CONF[arch]['branches']:
             work_dir = Path(args.destination_dir, arch, branch)
