@@ -248,9 +248,9 @@ def main():
 
     errors = False
     mirror = mirrors.get(args.mirror)
-    print(f'>>> Using mirror {mirror!r}.')
-
     arches = list(REPOS_CONF) if 'all' in args.arches else args.arches
+    print(f'>>> Using mirror {mirror!r} and arches: {", ".join(arches)}.')
+
     for arch in arches:
         print(f'>>> Arch: {arch!r}.')
         for branch in REPOS_CONF[arch]['branches']:
@@ -276,8 +276,9 @@ def main():
     if errors:
         print('ERROR: Some branches have been failed to sync.')
         exit(1)
-    else:
-        Path(args.destination_dir, 'last_update').write_text(f'{ctime()}\n')
+
+    for arch in arches:
+        Path(args.destination_dir, f'last_update.{arch}').write_text(f'{ctime()}\n')
 
 
 if __name__ == '__main__':
