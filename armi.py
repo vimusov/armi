@@ -237,12 +237,12 @@ def main():
     arg_parser.add_argument('-c', '--config', type=Path, default=Path('~/.config/armi.conf'), help='Config file.')
     arg_parser.add_argument('-d', '--destination-dir', type=Path, default=Path().cwd().resolve(), help='Destination directory.')
     arg_parser.add_argument('-m', '--mirror', default=None, help='Mirror URL to download from.')
-    arg_parser.add_argument('-s', '--show', action='store_true', help='Show all configured mirrors.')
+    arg_parser.add_argument('-l', '--list', dest='show_list', action='store_true', help='List all configured mirrors.')
     arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF) + ['all'], nargs='+', default=[DEF_ARCH], help='Arches to sync.')
     args = arg_parser.parse_args()
 
     mirrors = Mirrors(args.config.expanduser())
-    if args.show:
+    if args.show_list:
         mirrors.show()
         return
 
