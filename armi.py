@@ -46,11 +46,11 @@ BUF_SIZE = 32 * CHUNK_SIZE
 DEF_ARCH = 'x86_64'
 REPOS_CONF = {
     'aarch64': {
-        'url': '{mirror}/archlinux-arm/{arch}/{branch}/{name}',
+        'url': '{mirror}/{arch}/{branch}/{name}',
         'branches': ('core', 'extra', 'community', 'alarm'),
     },
     DEF_ARCH: {
-        'url': '{mirror}/archlinux/{branch}/os/{arch}/{name}',
+        'url': '{mirror}/{branch}/os/{arch}/{name}',
         'branches': ('core', 'extra', 'community', 'multilib'),
     },
 }
@@ -61,6 +61,9 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
     start_time = None
     prev_percent = None
     term_cols, unused_rows = get_terminal_size(fallback=(128, 0))
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36',
+    }
 
     def get_human_time(eta_time: float) -> str:
         secs = int(eta_time)
@@ -107,7 +110,7 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         print(status + tail, end='')
 
     def fetch():
-        with session.get(url, timeout=120, stream=True) as response:
+        with session.get(url, timeout=120, stream=True, headers=headers) as response:
             response.raise_for_status()
             cur_len = 0
             total_len = int(response.headers['Content-Length'])
