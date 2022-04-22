@@ -6,15 +6,48 @@ from contextlib import closing
 from dataclasses import dataclass
 from hashlib import md5
 from operator import attrgetter
-from os import fdatasync
+from os import fdatasync, isatty
 from pathlib import Path
 from shutil import get_terminal_size
 from signal import SIGINT, SIGTERM, signal
 from tarfile import TarFile
 from time import ctime, monotonic
 from typing import Iterator, List, Optional
+from enum import Enum, unique
 
 from requests import Session
+
+
+@unique
+class VerbosityLevel(Enum):
+    AUTO = 'auto'
+    QUIET = 'no'
+    VERBOSE = 'yes'
+
+
+class Printer:
+    def __init__(self):
+        self.__verbose = None
+
+    def put(self, *args, **kwargs):
+        if self.__verbose is None:
+            raise RuntimeError('Verbosity level is not set.')
+        if self.__verbose:
+            print(*args, **kwargs)
+
+    def is_verbose(self) -> bool:
+        return self.__verbose
+
+    def set_verbose(self, value: str):
+        level = VerbosityLevel(value)
+        if level == VerbosityLevel.AUTO:
+            self.__verbose = isatty(1)
+        elif level == VerbosityLevel.QUIET:
+            self.__verbose = False
+        elif level == VerbosityLevel.VERBOSE:
+            self.__verbose = True
+        else:
+            raise ValueError(f'Not implemented value {level!r}:')
 
 
 @dataclass(frozen=True)
@@ -54,6 +87,8 @@ REPOS_CONF = {
         'branches': ('core', 'extra', 'community', 'multilib'),
     },
 }
+
+printer = Printer()
 
 
 def _download(session: Session, url: str, file_path: Path, idx: int, amount: int):
@@ -107,7 +142,7 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
             f'@ {speed:.0f} {speed_suffix} ' \
             f'ETA {get_human_time(eta_time)}'
         tail = ' ' * (term_cols - len(status))
-        print(status + tail, end='')
+        printer.put(status + tail, end='')
 
     def fetch():
         with session.get(url, timeout=120, stream=True, headers=headers) as response:
@@ -129,7 +164,10 @@ def _download(session: Session, url: str, file_path: Path, idx: int, amount: int
         except Exception as error:
             print(f"\nOops, error '{error!s}' occurred, will try again.")
 
-    print('')
+    if not printer.is_verbose():
+        printer.put(f'\r[{idx}/{amount}] {file_path.name}: done.')
+
+    printer.put('')
 
 
 def _download_files(work_dir: Path, mirror: str, arch: str, branch: str, names: List[str]):
@@ -179,7 +217,7 @@ def _check_packages(packages: List[Package]) -> List[Package]:
         if not package.path.is_file():
             need_update_count += 1
             result.append(package)
-            print(message, end='')
+            printer.put(message, end='')
             continue
         md5_hash = md5()
         with package.path.open(mode='rb') as pkg_file:
@@ -190,7 +228,7 @@ def _check_packages(packages: List[Package]) -> List[Package]:
         if md5_hash.hexdigest() != package.checksum:
             broken_count += 1
             result.append(package)
-        print(message, end='')
+        printer.put(message, end='')
     if broken_count or need_update_count:
         print(f'{prefix}: {need_update_count} need update, {broken_count} broken.')
     else:
@@ -239,6 +277,7 @@ def main():
     arg_parser.add_argument('-m', '--mirror', default=None, help='Mirror URL to download from.')
     arg_parser.add_argument('-l', '--list', dest='show_list', action='store_true', help='List all configured mirrors.')
     arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF) + ['all'], nargs='+', default=[DEF_ARCH], help='Arches to sync.')
+    arg_parser.add_argument('-v', '--verbose', choices=list(item.value for item in VerbosityLevel), default=VerbosityLevel.AUTO.value, help='Be verbose.')
     args = arg_parser.parse_args()
 
     mirrors = Mirrors(args.config.expanduser())
@@ -248,6 +287,8 @@ def main():
 
     for signo in (SIGINT, SIGTERM):
         signal(signo, lambda *unused_args: exit(1))
+
+    printer.set_verbose(args.verbose)
 
     errors = False
     mirror = mirrors.get(args.mirror)
