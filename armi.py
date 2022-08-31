@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env -S python -u
 
 from argparse import ArgumentParser
 from configparser import RawConfigParser
