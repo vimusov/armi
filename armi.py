@@ -76,18 +76,23 @@ class Package:
     checksum: str
 
 
-class Mirrors:
+class Config:
     def __init__(self, path: Path):
         parser = RawConfigParser()
         parser.read_string(path.read_text())
         norm = lambda value: value.strip().lower()
         self.__default = norm(parser.get('setup', 'default'))
         self.__mirrors = {norm(country): norm(url) for country, url in parser.items('mirrors')}
+        self.__storage_path = Path(parser.get('storage', 'path').strip())
 
-    def get(self, country: Optional[str]) -> str:
+    @property
+    def storage(self) -> Path:
+        return self.__storage_path
+
+    def get_mirror(self, country: Optional[str]) -> str:
         return self.__mirrors[(country or self.__default).strip().lower()]
 
-    def show(self):
+    def show_mirrors(self):
         for country, url in self.__mirrors.items():
             print(f'{"*" if country == self.__default else " "}{country}: {url}')
 
@@ -108,6 +113,12 @@ REPOS_CONF = {
 }
 
 printer = Printer()
+
+
+def _get_storage_path(config_path) -> Path:
+    parser = RawConfigParser()
+    parser.read_string(config_path.read_text())
+    return Path(parser.get('storage', 'path'))
 
 
 def _download(session: Session, url: str, file_path: Path, idx: int, amount: int):
@@ -292,17 +303,20 @@ def _fix_symlinks(work_dir: Path, branch: str):
 def main():
     arg_parser = ArgumentParser()
     arg_parser.add_argument('-c', '--config', type=Path, default=Path('~/.config/armi.conf'), help='Config file.')
-    arg_parser.add_argument('-d', '--destination-dir', type=Path, default=Path().cwd().resolve(), help='Destination directory.')
+    arg_parser.add_argument('-d', '--destination-dir', type=Path, default=None, help='Destination directory.')
     arg_parser.add_argument('-m', '--mirror', default=None, help='Mirror URL to download from.')
     arg_parser.add_argument('-l', '--list', dest='show_list', action='store_true', help='List all configured mirrors.')
     arg_parser.add_argument('-A', '--arch', dest='arches', choices=list(REPOS_CONF) + ['all'], nargs='+', default=[DEF_ARCH], help='Arches to sync.')
     arg_parser.add_argument('-v', '--verbose', choices=list(item.value for item in VerbosityLevel), default=VerbosityLevel.AUTO.value, help='Be verbose.')
     args = arg_parser.parse_args()
 
-    mirrors = Mirrors(args.config.expanduser())
+    config = Config(args.config.expanduser())
     if args.show_list:
-        mirrors.show()
+        config.show_mirrors()
         return
+
+    if (destination_dir := args.destination_dir) is None:
+        destination_dir = config.storage
 
     for signo in (SIGINT, SIGTERM):
         signal(signo, lambda *unused_args: exit(1))
@@ -310,14 +324,14 @@ def main():
     printer.set_verbose(args.verbose)
 
     errors = False
-    mirror = mirrors.get(args.mirror)
+    mirror = config.get_mirror(args.mirror)
     arches = list(REPOS_CONF) if 'all' in args.arches else args.arches
     print(f'>>> Using mirror {mirror!r} and arches: {", ".join(arches)}.')
 
     for arch in arches:
         print(f'>>> Arch: {arch!r}.')
         for branch in REPOS_CONF[arch]['branches']:
-            work_dir = Path(args.destination_dir, arch, branch)
+            work_dir = Path(destination_dir, arch, branch)
             work_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
             print(f'>>> Syncing branch {branch!r}.')
             _download_files(work_dir, mirror, arch, branch, [f'{branch}.db.tar.gz', f'{branch}.files.tar.gz'])
@@ -341,7 +355,7 @@ def main():
         exit(1)
 
     for arch in arches:
-        Path(args.destination_dir, f'last_update.{arch}').write_text(f'{ctime()}\n')
+        Path(destination_dir, f'last_update.{arch}').write_text(f'{ctime()}\n')
 
 
 if __name__ == '__main__':
