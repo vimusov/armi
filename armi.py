@@ -23,7 +23,7 @@ from argparse import ArgumentParser
 from configparser import RawConfigParser
 from contextlib import closing
 from dataclasses import dataclass
-from hashlib import md5
+from hashlib import sha256
 from operator import attrgetter
 from os import fdatasync, isatty
 from pathlib import Path
@@ -226,7 +226,7 @@ def _load_packages(work_dir: Path, branch: str) -> Iterator[Package]:
                         file_name = cur_line
                     elif prev_line == '%CSIZE%':
                         size = int(cur_line)
-                    elif prev_line == '%MD5SUM%':
+                    elif prev_line == '%SHA256SUM%':
                         checksum = cur_line
                     prev_line = cur_line
             if all((file_name, size, checksum)):
@@ -249,13 +249,13 @@ def _check_packages(packages: List[Package]) -> List[Package]:
             result.append(package)
             printer.put(message, end='')
             continue
-        md5_hash = md5()
+        hasher = sha256()
         with package.path.open(mode='rb') as pkg_file:
             data = pkg_file.read(BUF_SIZE)
             while data:
-                md5_hash.update(data)
+                hasher.update(data)
                 data = pkg_file.read(BUF_SIZE)
-        if md5_hash.hexdigest() != package.checksum:
+        if hasher.hexdigest() != package.checksum:
             broken_count += 1
             result.append(package)
         printer.put(message, end='')
