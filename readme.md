@@ -1,3 +1,8 @@
+# WARNING
+
+This repository is strongly depreciated and archived.
+See [Arch Mirror Tool](https://github.com/vimusov/amt) instead.
+
 # What?
 
 `armi` is an utility that makes a local mirror of Arch Linux packages.
